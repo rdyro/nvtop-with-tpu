@@ -52,6 +52,7 @@ static bool populate_tpu_data(bool verbose);
 static int64_t millis(void);
 static int discover_tpu_devices_num(void);
 static void reset_tpu_statistics(bool);
+static bool is_tpu_info_installed(void);
 
 struct gpu_vendor gpu_vendor_tpu = {
     .init = gpuinfo_tpu_init,
@@ -85,7 +86,7 @@ bool thread_should_exit = false;
 int64_t millis(void) {
   struct timeval tv;
   gettimeofday(&tv, NULL);
-  return 1000000LL * tv.tv_sec + tv.tv_usec / 1000LL;
+  return 1000LL * tv.tv_sec + tv.tv_usec / 1000LL;
 }
 
 struct tpu_chip_usage_data *latest_chips_usage_data = NULL;
@@ -98,15 +99,26 @@ char python_script[] =
     "try:\n"
     "  chip_type, count = device.get_local_chips()\n"
     "  chips_usage = metrics.get_chip_usage(chip_type)\n"
-    "  for chip_usage in chips_usage:\n"
+    "  chip_paths = [device.chip_path(chip_type, i) for i in range(count)]\n" 
+    "  chip_owners = device.get_chip_owners()\n"
+    "  for chip_usage, chip_path in zip(chips_usage, chip_paths):\n"
+    "    pid = chip_owners.get(chip_path)\n"
     "    print(f\"{chip_usage.device_id:d} {chip_usage.memory_usage:d}"
     " {chip_usage.total_memory:d} {chip_usage.duty_cycle_pct:.4f}"
-    " {chip_type.value.name}\", flush=True)\n"
+    " {chip_type.value.name} {pid:d}\", flush=True)\n"
     "except:\n"
     "  pass\n";
 char *popen_command = NULL;
 
 #define CMD_MAX_LEN 2048
+
+bool is_tpu_info_installed(void) {
+  char line[1024];
+  FILE *p = popen("python3 -c 'import tpu_info; print(1)'", "r");
+  bool status = (fgets(line, sizeof(line), p) != NULL && line[0] == '1');
+  pclose(p);
+  return status;
+}
 
 int discover_tpu_devices_num(void) {
   glob_t glob_result;
@@ -129,7 +141,7 @@ void setup_populate_tpu_data(bool avoid_py_compile) {
     int fd = mkstemp(tmpfile_template);
     if (fd != -1) {
   #ifdef DEBUG
-      printf("Created temporary python script file %s\n", tmpfile_template);
+      fprintf(stderr, "Created temporary python script file %s\n", tmpfile_template);
   #endif
       int success = write(fd, python_script, strlen(python_script));
       if (success > 0) {
@@ -141,12 +153,12 @@ void setup_populate_tpu_data(bool avoid_py_compile) {
   }
   if (!file_written) {
 #ifdef DEBUG
-    printf("Failed to create a temporary python script file, falling back\n");
+    fprintf(stderr, "Failed to create a temporary python script file, falling back\n");
 #endif
     snprintf(popen_command, CMD_MAX_LEN, "python3 -c '%s'", python_script);
   }
 #ifdef DEBUG
-  printf("popen_command = %s\n", popen_command);
+  fprintf(stderr, "popen_command = %s\n", popen_command);
 #endif
 }
 
@@ -173,22 +185,21 @@ bool populate_tpu_data(bool verbose) {
     // check if the script is printing "tpu_info_missing"
     if (id == 0 && strcmp(line, "tpu_info missing") == 0) {
       fprintf(stderr, "tpu_info is not installed\n");
-      thread_should_exit = true;
-      tpu_chip_count = 0;
       break;
     }
 
     // parse a data line
     struct tpu_chip_usage_data usage_data;
-    if (sscanf(line, "%ld %ld %ld %lf %7[^,]", 
+    if (sscanf(line, "%ld %ld %ld %lf %7[^ ] %ld", 
       &usage_data.device_id, &usage_data.memory_usage, &usage_data.total_memory, 
-      &usage_data.duty_cycle_pct, (char*)&usage_data.name) == 5) {
+      &usage_data.duty_cycle_pct, (char*)&usage_data.name, &usage_data.pid) == 6) {
         usage_data.name[sizeof(usage_data.name) - 1] = '\0';
         pthread_mutex_lock(&m);
         latest_chips_usage_data[id] = usage_data;
         pthread_mutex_unlock(&m);
     } else {
       fprintf(stderr, "Error parsing TPU output line: %s\n", line);
+      break;
     }
     id += 1;
   }
@@ -203,10 +214,10 @@ bool populate_tpu_data(bool verbose) {
   // printing timing information about data query
 #ifdef DEBUG
   t = millis() - t;
-  printf("Populated TPU data in %ld ms\n", t);
-  printf("Found data for %d TPU chips\n", id);
+  fprintf(stderr, "Populated TPU data in %ld ms\n", t);
+  fprintf(stderr, "Found data for %d TPU chips\n", id);
 #endif
-  if (verbose) printf("Found %ld TPU chips\n", tpu_chip_count);
+  if (verbose) fprintf(stderr, "Found %ld TPU chips\n", tpu_chip_count);
   return id == tpu_chip_count;
 }
 
@@ -231,6 +242,7 @@ void reset_tpu_statistics(bool fully) {
   for (int i = 0; i < tpu_chip_count; i++) {
     latest_chips_usage_data[i].memory_usage = 0;
     latest_chips_usage_data[i].duty_cycle_pct = 0;
+    latest_chips_usage_data[i].pid = -1;
     if (fully) {
       snprintf(latest_chips_usage_data[i].name, sizeof(latest_chips_usage_data[i].name), "%s", "N/A");
       latest_chips_usage_data[i].device_id = 0;
@@ -245,6 +257,12 @@ bool gpuinfo_tpu_init(void) {
   tpu_chip_count = discover_tpu_devices_num();
   if (tpu_chip_count == 0) {
     printf("Found 0 TPU devices in /dev/{accel,vfio}/*\n");
+    return false;
+  }
+  if (!is_tpu_info_installed()) {
+    printf("Found %ld TPU devices in /dev/{accel,vfio}/* but `tpu_info` is not installed."
+           " You can install it using `pip install tpu-info`.", tpu_chip_count);
+    tpu_chip_count = 0;
     return false;
   }
   latest_chips_usage_data = (struct tpu_chip_usage_data*)malloc(tpu_chip_count*sizeof(struct tpu_chip_usage_data));
@@ -330,4 +348,22 @@ void gpuinfo_tpu_refresh_dynamic_info(struct gpu_info *_gpu_info) {
 
 void gpuinfo_tpu_get_running_processes(struct gpu_info *_gpu_info) {
   (void)_gpu_info;
+  pthread_mutex_lock(&m);
+  if (tpu_chip_count <= 0 || latest_chips_usage_data[0].pid < 0) {
+    _gpu_info->processes_count = 0;
+    pthread_mutex_unlock(&m);
+    return;
+  }
+  _gpu_info->processes_count = 1;
+  if (_gpu_info->processes_array_size == 0) {
+    _gpu_info->processes_array_size = 1;
+    _gpu_info->processes = (struct gpu_process*)malloc(1 * sizeof(struct gpu_process));
+    memset(_gpu_info->processes, 0, _gpu_info->processes_count * sizeof(*_gpu_info->processes));
+  }
+  _gpu_info->processes[0].type = gpu_process_compute;
+  _gpu_info->processes[0].pid = latest_chips_usage_data[0].pid;
+  _gpu_info->processes[0].gpu_memory_usage = _gpu_info->dynamic_info.used_memory;
+  pthread_mutex_unlock(&m);
+
+  SET_VALID(gpuinfo_process_gpu_memory_usage_valid, _gpu_info->processes[0].valid);
 }

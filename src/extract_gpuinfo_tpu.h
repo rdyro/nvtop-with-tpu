@@ -14,6 +14,7 @@ struct tpu_chip_usage_data {
   int64_t memory_usage;
   int64_t total_memory;
   double duty_cycle_pct;
+  int64_t pid;
 };
 
 #endif // EXTRACT_GPUINFO_TPU_H_
