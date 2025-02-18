@@ -44,9 +44,10 @@ static bool gpuinfo_tpu_get_device_handles(struct list_head *devices, unsigned *
 static void gpuinfo_tpu_populate_static_info(struct gpu_info *_gpu_info);
 static void gpuinfo_tpu_refresh_dynamic_info(struct gpu_info *_gpu_info);
 static void gpuinfo_tpu_get_running_processes(struct gpu_info *_gpu_info);
-void* query_tpu_data_thread_fn(void* _);
-void populate_tpu_data(bool verbose);
-int64_t millis(void);
+static void* query_tpu_data_thread_fn(void* _);
+static void setup_populate_tpu_data(void);
+static void populate_tpu_data(bool verbose);
+static int64_t millis(void);
 
 struct gpu_vendor gpu_vendor_tpu = {
     .init = gpuinfo_tpu_init,
@@ -80,27 +81,53 @@ int64_t millis(void) {
   return 1000000LL * tv.tv_sec + tv.tv_usec / 1000LL;
 }
 
+#define MAX_CHIPS_PER_HOST 256
+struct tpu_chip_usage_data latest_chips_usage_data[MAX_CHIPS_PER_HOST];
+
 char python_script[] = 
     "from tpu_info import device, metrics\n"
     "try:\n"
     "  chip_type, count = device.get_local_chips()\n"
     "  chips_usage = metrics.get_chip_usage(chip_type)\n"
     "  for chip_usage in chips_usage:\n"
-    "    print(f\"{chip_usage.device_id:d} {chip_usage.memory_usage:d}\""
-    "          f\" {chip_usage.total_memory:d} {chip_usage.duty_cycle_pct:.4f}\""
-    "          f\" {chip_type.value.name}\")\n"
+    "    print(f\"{chip_usage.device_id:d} {chip_usage.memory_usage:d}"
+    " {chip_usage.total_memory:d} {chip_usage.duty_cycle_pct:.4f}"
+    " {chip_type.value.name}\")\n"
     "except:\n"
-    "  pass\n";
+    "  pass";
 char *popen_command = NULL;
 
-#define MAX_CHIPS_PER_HOST 256
-struct tpu_chip_usage_data latest_chips_usage_data[MAX_CHIPS_PER_HOST];
+void setup_populate_tpu_data(void) {
+  popen_command = (char*)malloc(2048);
+  // 1. attempt to create a temporary file to store the python script
+  // 2. if that fails, call the source code via python3 -c '...'
+  char tmpfile_template[] = "/tmp/query_tpu_data.py.XXXXXX";
+  int fd = mkstemp(tmpfile_template);
+  if (fd == -1) {
+#ifdef DEBUG
+    printf("Failed to create a temporary python script file\n");
+#endif
+    snprintf(popen_command, 2048 - 1, "python3 -c '%s'", python_script);
+  } else {
+#ifdef DEBUG
+    printf("Created temporary python script file %s\n", tmpfile_template);
+#endif
+    write(fd, python_script, strlen(python_script));
+    close(fd);
+    snprintf(popen_command, 2048 - 1, "python3 -m py_compile %s", tmpfile_template);
+  }
+#ifdef DEBUG
+  printf("popen_command = %s\n", popen_command);
+#endif
+}
 
 void populate_tpu_data(bool verbose) {
-  if (popen_command == NULL) {
-    popen_command = (char*)malloc(2048);
-    snprintf(popen_command, 2048, "python3 -c '%s'", python_script);
-  }
+  if (popen_command == NULL) setup_populate_tpu_data();
+
+#ifdef DEBUG
+  int64_t t = millis();
+#endif
+
   FILE* p = popen(popen_command, "r");
   char line[2048];
   int idx = 0; 
@@ -128,7 +155,14 @@ void populate_tpu_data(bool verbose) {
     if (idx >= MAX_CHIPS_PER_HOST) break;
   }
   pclose(p);
-  if (tpu_chip_count < 0) tpu_chip_count = idx;
+
+  // printing timing information about data query
+#ifdef DEBUG
+  t = millis() - t;
+  printf("Populated TPU data in %ld ms\n", t);
+#endif
+
+  if (tpu_chip_count < 0) tpu_chip_count = idx; // TPU devices are not initialized yet
   if (verbose) printf("Found %ld TPU chips\n", tpu_chip_count);
 }
 
