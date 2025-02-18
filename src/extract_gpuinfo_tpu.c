@@ -69,6 +69,9 @@ static struct gpu_info_tpu *gpu_infos;
 #define VENDOR_TPU 0x1111
 #define VENDOR_TPU_STR STRINGIFY(VENDOR_TPU)
 
+#define MAX(x, y) ((x >= y) ? (x) : (y))
+#define MIN(x, y) ((x <= y) ? (x) : (y))
+
 __attribute__((constructor)) static void init_extract_gpuinfo_tpu(void) { register_gpu_vendor(&gpu_vendor_tpu); }
 
 pthread_mutex_t m = PTHREAD_MUTEX_INITIALIZER;
@@ -81,7 +84,7 @@ int64_t millis(void) {
   return 1000000LL * tv.tv_sec + tv.tv_usec / 1000LL;
 }
 
-#define MAX_CHIPS_PER_HOST 256
+#define MAX_CHIPS_PER_HOST 64
 struct tpu_chip_usage_data latest_chips_usage_data[MAX_CHIPS_PER_HOST];
 
 char python_script[] = 
@@ -97,9 +100,13 @@ char python_script[] =
     "  pass";
 char *popen_command = NULL;
 
+#define CMD_MAX_LEN 2048
+
 void setup_populate_tpu_data(void) {
-  popen_command = (char*)malloc(2048);
+  popen_command = (char*)malloc(CMD_MAX_LEN);
   // 1. attempt to create a temporary file to store the python script
+  //    this helps with repeated invokations since we're using
+  //    $ python3 -m py_compile {source_file.py}
   // 2. if that fails, call the source code via python3 -c '...'
   char tmpfile_template[] = "/tmp/query_tpu_data.py.XXXXXX";
   int fd = mkstemp(tmpfile_template);
@@ -107,14 +114,14 @@ void setup_populate_tpu_data(void) {
 #ifdef DEBUG
     printf("Failed to create a temporary python script file\n");
 #endif
-    snprintf(popen_command, 2048 - 1, "python3 -c '%s'", python_script);
+    snprintf(popen_command, CMD_MAX_LEN, "python3 -c '%s'", python_script);
   } else {
 #ifdef DEBUG
     printf("Created temporary python script file %s\n", tmpfile_template);
 #endif
     write(fd, python_script, strlen(python_script));
     close(fd);
-    snprintf(popen_command, 2048 - 1, "python3 -m py_compile %s", tmpfile_template);
+    snprintf(popen_command, CMD_MAX_LEN, "python3 -m py_compile %s", tmpfile_template);
   }
 #ifdef DEBUG
   printf("popen_command = %s\n", popen_command);
@@ -130,29 +137,31 @@ void populate_tpu_data(bool verbose) {
 
   FILE* p = popen(popen_command, "r");
   char line[2048];
-  int idx = 0; 
-  while (fgets(line, 2048 - 1, p) != NULL) {
-    line[2048 - 1] = '\0';
-    if (idx >= MAX_CHIPS_PER_HOST || (tpu_chip_count > 0 && idx >= tpu_chip_count)) break;
+  int id = 0; 
+  while (fgets(line, sizeof(line), p) != NULL) {
+    line[sizeof(line) - 1] = '\0';
+    if (id >= MAX_CHIPS_PER_HOST || (tpu_chip_count > 0 && id >= tpu_chip_count)) break;
     struct tpu_chip_usage_data usage_data;
-    if (sscanf(line, "%ld %ld %ld %lf %7[^,]", 
-      &usage_data.device_idx, &usage_data.memory_usage, &usage_data.total_memory, 
+    if (sscanf(line, "%ld %ld %ld %lf %7[^\n]", 
+      &usage_data.device_id, &usage_data.memory_usage, &usage_data.total_memory, 
       &usage_data.duty_cycle_pct, (char*)&usage_data.name) == 5) {
-        if (idx != usage_data.device_idx) {
-          printf("Out of order TPU device found: %ld on line %d\n", usage_data.device_idx, idx);
+        if (id != usage_data.device_id) {
+          printf("Out of order TPU device found: %ld on line %d\n", usage_data.device_id, id);
           exit(1);
         }
-        size_t len = strcspn(usage_data.name, "\n");
-        usage_data.name[len] = '\0';
+        usage_data.name[sizeof(usage_data.name) - 1] = '\0';
+        //size_t len = strcspn(usage_data.name, "\n");
+        //len = MIN(MAX(0, len), sizeof(usage_data.name))
+        //usage_data.name[len - 1] = '\0';  // trim the newline character away
         pthread_mutex_lock(&m);
-        latest_chips_usage_data[idx] = usage_data;
+        latest_chips_usage_data[id] = usage_data;
         pthread_mutex_unlock(&m);
     } else {
       printf("Error parsing TPU output line: %s\n", line);
       exit(1);
     }
-    idx += 1;
-    if (idx >= MAX_CHIPS_PER_HOST) break;
+    id += 1;
+    if (id >= MAX_CHIPS_PER_HOST) break;
   }
   pclose(p);
 
@@ -162,7 +171,7 @@ void populate_tpu_data(bool verbose) {
   printf("Populated TPU data in %ld ms\n", t);
 #endif
 
-  if (tpu_chip_count < 0) tpu_chip_count = idx; // TPU devices are not initialized yet
+  if (tpu_chip_count < 0) tpu_chip_count = id; // TPU devices are not initialized yet
   if (verbose) printf("Found %ld TPU chips\n", tpu_chip_count);
 }
 
@@ -203,10 +212,8 @@ const char *gpuinfo_tpu_last_error_string(void) { return "Err"; }
 static void add_tpu_chip(struct list_head *devices, unsigned *count) {
   struct gpu_info_tpu *this_tpu = &gpu_infos[*count];
   this_tpu->base.vendor = &gpu_vendor_tpu;
-  this_tpu->device_idx = *count;
-  char pdev_val[PDEV_LEN];
-  snprintf(pdev_val, PDEV_LEN - 1, "TPU%u-%s", *count, latest_chips_usage_data[*count].name);
-  strncpy(this_tpu->base.pdev, pdev_val, PDEV_LEN - 1);
+  this_tpu->device_id = *count;
+  snprintf(this_tpu->base.pdev, PDEV_LEN, "TPU%u-%s", *count, latest_chips_usage_data[*count].name);
   list_add_tail(&this_tpu->base.list, devices);
 
   this_tpu->base.processes_count = 0;
@@ -236,7 +243,7 @@ void gpuinfo_tpu_populate_static_info(struct gpu_info *_gpu_info) {
   static_info->encode_decode_shared = false;
   RESET_ALL(static_info->valid);
   SET_VALID(gpuinfo_device_name_valid, static_info->valid);
-  strncpy(static_info->device_name, gpu_info->base.pdev, sizeof(static_info->device_name));
+  snprintf(static_info->device_name, MIN(sizeof(static_info->device_name), PDEV_LEN), "%s", gpu_info->base.pdev);
 }
 
 void gpuinfo_tpu_refresh_dynamic_info(struct gpu_info *_gpu_info) {
@@ -244,10 +251,10 @@ void gpuinfo_tpu_refresh_dynamic_info(struct gpu_info *_gpu_info) {
   // struct gpuinfo_static_info *static_info = &gpu_info->base.static_info; // unused
   struct gpuinfo_dynamic_info *dynamic_info = &gpu_info->base.dynamic_info;
 
-  if (gpu_info->device_idx >= tpu_chip_count) return;
+  if (gpu_info->device_id >= tpu_chip_count) return;
 
   pthread_mutex_lock(&m);
-  struct tpu_chip_usage_data usage_data = latest_chips_usage_data[gpu_info->device_idx];
+  struct tpu_chip_usage_data usage_data = latest_chips_usage_data[gpu_info->device_id];
   pthread_mutex_unlock(&m);
 
   double mem_util = round(1e2 * (double)(usage_data.memory_usage) / (double)(usage_data.total_memory));
