@@ -90,6 +90,7 @@ else()
   set(PANTHOR_SUPPORT_DEFAULT ON)
   set(ASCEND_SUPPORT_DEFAULT OFF)
 endif()
+set(TPU_SUPPORT_DEFAULT ON)
 
 option(NVIDIA_SUPPORT "Build support for NVIDIA GPUs through libnvml" ${NVIDIA_SUPPORT_DEFAULT})
 option(AMDGPU_SUPPORT "Build support for AMD GPUs through amdgpu driver" ${AMDGPU_SUPPORT_DEFAULT})
@@ -100,6 +101,7 @@ option(PANFROST_SUPPORT "Build support for Mali GPUs through panfrost driver" ${
 option(PANTHOR_SUPPORT "Build support for Mali GPUs through panthor driver" ${PANTHOR_SUPPORT_DEFAULT})
 option(ASCEND_SUPPORT "Build support for Ascend NPUs through Ascend DCMI" ${ASCEND_SUPPORT_DEFAULT})
 option(V3D_SUPPORT "Build support for Raspberrypi through v3d" ${V3D_SUPPORT_DEFAULT})
+option(TPU_SUPPORT "Build support for Google TPUs through grpcio" ${TPU_SUPPORT_DEFAULT})
 
 add_subdirectory(src)
 

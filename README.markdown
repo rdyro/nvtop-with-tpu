@@ -1,3 +1,37 @@
+NVTOP with TPU Support
+=====
+
+This is an unoffical fork supporting [Google TPUs](https://en.wikipedia.org/wiki/Tensor_Processing_Unit) via os callbacks to the [tpu-info](https://github.com/AI-Hypercomputer/cloud-accelerator-diagnostics/tree/main/tpu_info) Python package.
+
+You **MUST** turn on NVTOP **AFTER** initializing the TPUs (e.g., `>>> import jax; jax.devices()`).
+
+*Not an official Google product.*
+
+<p align="center">
+<img src="screenshot/NVTOP_with_TPUs.png" style="width: 500px" alt="NVTOP with TPUs" />
+<p>
+
+### Installation
+
+```bash
+pip install tpu-info # you must install tpu-info to be able to discover and monitor TPUs
+git clone https://github.com/rdyro/nvtop-with-tpu
+cd nvtop-with-tpu && mkdir -p build && cd build && cmake .. && make -j8
+./src/nvtop  # to test the build
+# optionally:
+# sudo make install  # (from the nvtop/build directory)
+```
+
+<br>
+<br>
+<br>
+<br>
+
+<p align="center">
+Original README below
+</p>
+
+
 NVTOP
 =====
 
