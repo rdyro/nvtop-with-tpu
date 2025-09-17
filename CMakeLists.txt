@@ -93,17 +93,7 @@ endif()
 
 # TPU support is only available on Linux
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  # Check for libtpuinfo.so to set the default for TPU support
-  find_library(LIBTPUINFO
-    NAMES libtpuinfo.so
-    PATHS /usr/lib /usr/lib64 /usr/local/lib /usr/local/lib64
-    HINTS ${CMAKE_INSTALL_PREFIX}/lib ${CMAKE_INSTALL_PREFIX}/lib64 lib lib64
-  )
-  if (NOT LIBTPUINFO)
-    set(TPU_SUPPORT_DEFAULT OFF)
-  else()
-    set(TPU_SUPPORT_DEFAULT ON)
-  endif()
+  set(TPU_SUPPORT_DEFAULT ON)
 else()
   set(TPU_SUPPORT_DEFAULT OFF)
 endif()
